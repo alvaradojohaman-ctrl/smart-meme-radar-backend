@@ -1,0 +1,45 @@
+# Review the costs shown by Render before deploying. Three persistent services.
+services:
+  - type: web
+    name: smr-api
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: smr-postgres
+          property: connectionString
+      - key: API_KEY
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        sync: false
+  - type: worker
+    name: smr-worker
+    runtime: docker
+    plan: starter
+    region: oregon
+    numInstances: 1
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m smr.worker
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: smr-postgres
+          property: connectionString
+      - key: API_KEY
+        fromService:
+          type: web
+          name: smr-api
+          envVarKey: API_KEY
+      - key: DISCOVERY_SECONDS
+        value: '60'
+databases:
+  - name: smr-postgres
+    plan: basic-256mb
+    region: oregon
+    databaseName: smr
+    user: smr
+    ipAllowList: []
