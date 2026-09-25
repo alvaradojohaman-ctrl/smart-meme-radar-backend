@@ -1,0 +1,54 @@
+const {chromium}=require('playwright');
+const fs=require('node:fs');
+const path=require('node:path');
+const assert=require('node:assert/strict');
+(async()=>{
+const opts={headless:true};
+if(process.env.CHROMIUM_EXECUTABLE){opts.executablePath=process.env.CHROMIUM_EXECUTABLE;opts.args=['--no-sandbox','--disable-dev-shm-usage']}
+const browser=await chromium.launch(opts);
+try{
+const page=await browser.newPage({viewport:{width:1280,height:960}});
+const errors=[];page.on('pageerror',e=>errors.push(e.message));
+const fixture=JSON.stringify(Array.from({length:68},(_,i)=>({id:'synthetic-'+i,address:'A'.repeat(32),symbol:'HIST-SIM-'+i,time:1700000000000+i,group:i%2?'APROBADO':'BLOQUEADO',market:80,risk:0,entryPrice:1,snapshot:{},checkpoints:{'5m':{pct:null},'15m':{pct:'—'},'30m':{pct:0},'1h':{pct:-5}}})));
+await page.goto('http://127.0.0.1:8080');
+await page.evaluate(raw=>{localStorage.setItem('smr_experiment_v04d',raw);localStorage.setItem('smr_capital','8500')},fixture);
+await page.reload();
+assert.equal(await page.locator('#historyRows tr').count(),68);
+await page.locator('#exportLocal').click();
+await page.locator('#apiUrl').fill('http://127.0.0.1:8000');
+await page.locator('#apiKey').fill(process.env.API_KEY);
+await page.locator('#connect').click();
+await page.waitForFunction(()=>document.querySelector('#connection').textContent.includes('Recolector activo'));
+assert.equal(await page.locator('#caseCount').innerText(),'2');
+await page.locator('[data-view=experiment]').click();
+assert.equal(await page.locator('#expRows tr').count(),2);
+assert.equal(await page.locator('#expRows img').count(),0,'Untrusted symbol must be escaped');
+assert.ok((await page.locator('#expRows').innerText()).includes('+10.00%'));
+assert.ok((await page.locator('#expRows').innerText()).includes('perdido'));
+assert.ok((await page.locator('#expRows').innerText()).includes('pendiente'));
+await page.locator('[data-case="0"][data-horizon="5m"]').click();
+assert.ok((await page.locator('#timingDetail').innerText()).includes('Objetivo UTC'));
+const payload={format:'smr-v04d-export-1',rawCases:fixture,rawCapital:'8500',rawLegacy:'[]'};
+await page.locator('#importFile').setInputFiles({name:'synthetic-history.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(payload))});
+await page.waitForFunction(()=>document.querySelector('#connection').textContent.includes('Histórico verificado: 68/68'));
+assert.equal(await page.locator('#capital').innerText(),'Q8,500');
+assert.equal(await page.evaluate(()=>localStorage.getItem('smr_experiment_v04d')),fixture);
+assert.ok(!(await page.evaluate(()=>JSON.stringify(localStorage))).includes(process.env.API_KEY));
+await page.locator('[data-view=historical]').click();
+assert.equal(await page.locator('#historyRows tr').count(),68);
+const cells=await page.locator('#historyRows tr').first().locator('td').allTextContents();
+assert.equal(cells[4],'—');assert.equal(cells[5],'—');assert.equal(cells[6],'+0.00%');
+const output=process.env.SCREENSHOT_DIR||'.';fs.mkdirSync(output,{recursive:true});
+await page.screenshot({path:path.join(output,'desktop-historical.png'),fullPage:false});
+await page.setViewportSize({width:390,height:844});
+await page.locator('[data-view=experiment]').click();
+await page.screenshot({path:path.join(output,'mobile-experiment.png'),fullPage:true});
+assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'Mobile body should not overflow');
+await page.goto('http://127.0.0.1:8080/export-v04d.html');
+assert.ok((await page.locator('#info').innerText()).includes('68 casos encontrados'));
+const downloadPromise=page.waitForEvent('download');await page.locator('#export').click();const dl=await downloadPromise;
+const text=fs.readFileSync(await dl.path(),'utf8');assert.equal(JSON.parse(text).rawCases,fixture);
+assert.equal(errors.length,0,errors.join('\n'));
+console.log('PASS: desktop/mobile, API auth/connect, import 68, historical null/dash/zero, XSS escaping, unchanged localStorage, checkpoint detail, export roundtrip, no JS errors.');
+} finally{await browser.close()}
+})().catch(e=>{console.error(e);process.exit(1)});
